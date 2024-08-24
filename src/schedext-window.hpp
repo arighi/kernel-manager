@@ -66,6 +66,7 @@ class SchedExtWindow final : public QMainWindow {
  private:
     void on_apply() noexcept;
     void on_disable() noexcept;
+    void on_sched_changed() noexcept;
 
     std::vector<std::string> m_previously_set_options{};
     std::unique_ptr<Ui::SchedExtWindow> m_ui = std::make_unique<Ui::SchedExtWindow>();

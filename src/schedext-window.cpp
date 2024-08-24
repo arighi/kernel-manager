@@ -116,6 +116,14 @@ SchedExtWindow::SchedExtWindow(QWidget* parent)
                 << "scx_userland";
     m_ui->schedext_combo_box->addItems(sched_names);
 
+    // Selecting the performance profile
+    QStringList sched_profiles;
+    sched_profiles << "default"
+                   << "gaming"
+                   << "lowlatency"
+                   << "powersave";
+    m_ui->schedext_profile_combo_box->addItems(sched_profiles);
+
     m_ui->current_sched_label->setText(QString::fromStdString(get_current_scheduler()));
 
     // setup timer
@@ -123,6 +131,13 @@ SchedExtWindow::SchedExtWindow(QWidget* parent)
 
     connect(m_sched_timer, &QTimer::timeout, this, &SchedExtWindow::update_current_sched);
     m_sched_timer->start(1s);
+
+    connect(m_ui->schedext_combo_box,
+        QOverload<int>::of(&QComboBox::currentIndexChanged),
+        this,
+        &SchedExtWindow::on_sched_changed);
+    // Initialize the visibility of the profile selection box
+    on_sched_changed();
 
     // Connect buttons signal
     connect(m_ui->apply_button, &QPushButton::clicked, this, &SchedExtWindow::on_apply);
@@ -155,6 +170,22 @@ void SchedExtWindow::on_disable() noexcept {
     m_ui->apply_button->setEnabled(true);
 }
 
+void SchedExtWindow::on_sched_changed() noexcept {
+    const auto& scheduler = m_ui->schedext_combo_box->currentText();
+
+    // Show or hide the profile selection UI based on the selected scheduler
+    //
+    // NOTE: only scx_bpfland and scx_lavd support different preset profiles at
+    // the moment.
+    if (scheduler == "scx_bpfland" || scheduler == "scx_lavd") {
+        m_ui->scheduler_profile_select_label->setVisible(true);
+        m_ui->schedext_profile_combo_box->setVisible(true);
+    } else {
+        m_ui->scheduler_profile_select_label->setVisible(false);
+        m_ui->schedext_profile_combo_box->setVisible(false);
+    }
+}
+
 void SchedExtWindow::on_apply() noexcept {
     m_ui->disable_button->setEnabled(false);
     m_ui->apply_button->setEnabled(false);
@@ -167,35 +198,47 @@ void SchedExtWindow::on_apply() noexcept {
         return "restart"sv;
     }();
 
-    static constexpr auto is_flags_commented = []() -> bool {
+    static constexpr auto get_scx_flags_sed = [](std::string_view scx_sched,
+                                                  std::string_view scx_profile,
+                                                  std::string_view scx_extra_flags) -> std::string {
         using namespace std::string_view_literals;
-        static constexpr auto scx_conf_path = "/etc/default/scx"sv;
-        const auto& scx_conf_content        = utils::read_whole_file(scx_conf_path);
-        return scx_conf_content.find("#SCX_FLAGS="sv) != std::string::npos;
-    };
-    static constexpr auto get_scx_flags_sed = [](std::string_view sched_flags_text, bool flags_commented) -> std::string {
-        using namespace std::string_literals;
-        if (sched_flags_text.empty() && !flags_commented) {
-            // comment out flags in scx
-            return "-e 's/SCX_FLAGS=/#SCX_FLAGS=/'"s;
-        } else if (!sched_flags_text.empty() && flags_commented) {
-            // set flags in scx
-            return fmt::format(R"(-e "s/.*SCX_FLAGS=.*/SCX_FLAGS='{}'/")", sched_flags_text);
-        } else if (!sched_flags_text.empty() && !flags_commented) {
-            // set flags in scx
-            return fmt::format(R"(-e "s/SCX_FLAGS=.*/SCX_FLAGS='{}'/")", sched_flags_text);
-        }
-        return ""s;
-    };
 
-    const bool flags_commented = is_flags_commented();
+        std::string_view scx_base_flags;
+
+        // Map the selected performance profile to the different scheduler
+        // options.
+        //
+        // NOTE: only scx_bpfland and scx_lavd are supported for now.
+        if (scx_profile == "default"sv) {
+        } else if (scx_profile == "gaming"sv) {
+            if (scx_sched == "scx_bpfland"sv)
+                scx_base_flags = "-c 0 -k -m performance"sv;
+            else if (scx_sched == "scx_lavd"sv)
+                scx_base_flags = "--performance"sv;
+        } else if (scx_profile == "lowlatency"sv) {
+            if (scx_sched == "scx_bpfland"sv)
+                scx_base_flags = "--lowlatency"sv;
+            else if (scx_sched == "scx_lavd"sv)
+                scx_base_flags = "--performance"sv;
+        } else if (scx_profile == "powersave"sv) {
+            if (scx_sched == "scx_bpfland"sv)
+                scx_base_flags = "-m powersave"sv;
+            else if (scx_sched == "scx_lavd"sv)
+                scx_base_flags = "--powersave"sv;
+        }
+
+        return fmt::format(R"(-e 's/^\s*#\?\s*SCX_FLAGS=.*$/SCX_FLAGS="{} {}"/')", scx_base_flags, scx_extra_flags);
+    };
 
     // TODO(vnepogodin): refactor that
-    const auto& sched_flags_text = m_ui->schedext_flags_edit->text().trimmed().toStdString();
-    const auto& scx_flags_sed    = get_scx_flags_sed(sched_flags_text, flags_commented);
-
     const auto& current_selected = m_ui->schedext_combo_box->currentText().toStdString();
-    const auto& sed_cmd          = fmt::format("sed -e 's/SCX_SCHEDULER=.*/SCX_SCHEDULER={}/' {} -i /etc/default/scx && systemctl {} scx", current_selected, scx_flags_sed, service_cmd);
+    const auto& current_profile  = m_ui->schedext_profile_combo_box->currentText().toStdString();
+    const auto& extra_flags      = m_ui->schedext_flags_edit->text().trimmed().toStdString();
+
+    const auto& scx_flags_sed = get_scx_flags_sed(current_selected, current_profile, extra_flags);
+
+    const auto& sed_cmd = fmt::format("sed -e 's/SCX_SCHEDULER=.*/SCX_SCHEDULER={}/' {} -i /etc/default/scx && systemctl {} scx", current_selected, scx_flags_sed, service_cmd);
+
     QProcess::startDetached("/usr/bin/pkexec", {"/usr/bin/bash", "-c", QString::fromStdString(sed_cmd)});
     fmt::print("Applying scx {}\n", current_selected);
 
