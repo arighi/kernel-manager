@@ -127,7 +127,7 @@ constexpr auto get_scx_flags(std::string_view scx_sched, SchedMode scx_mode) noe
     if (scx_mode == SchedMode::Auto) {
     } else if (scx_mode == SchedMode::Gaming) {
         if (scx_sched == "scx_bpfland"sv) {
-            return "-c 0 -k -m performance"sv;
+            return "-k -m performance"sv;
         } else if (scx_sched == "scx_lavd"sv) {
             return "--performance"sv;
         }
